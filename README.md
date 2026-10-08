@@ -29,9 +29,7 @@
 
 </div>
 
-![首页](docs/screenshots/home.png)
-
-![待办](docs/screenshots/todo.png)
+![当前工作台](docs/screenshots/home.png)
 
 ## 它是什么
 
