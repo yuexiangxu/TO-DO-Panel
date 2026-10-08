@@ -14,6 +14,7 @@ const panel = document.getElementById('panel');
 const statusToast = document.getElementById('status-toast');
 const statusToastMessage = document.getElementById('status-toast-message');
 const statusToastAction = document.getElementById('status-toast-action');
+const desktopPetToggle = document.getElementById('desktop-pet-toggle');
 
 function collectLocalStorageSnapshot() {
   const result = {};
@@ -117,6 +118,31 @@ if (statusToastAction) {
     if (handler) handler();
   });
 }
+
+function applyDesktopPetState(state) {
+  if (!desktopPetToggle) return;
+  const visible = Boolean(state && state.visible);
+  desktopPetToggle.setAttribute('aria-pressed', String(visible));
+  desktopPetToggle.title = visible ? '收回桌宠' : '显示桌宠';
+}
+
+desktopPetToggle?.addEventListener('click', async (event) => {
+  event.stopPropagation();
+  desktopPetToggle.disabled = true;
+  try {
+    const result = await window.notchAPI?.toggleDesktopPet?.();
+    if (result?.ok) {
+      applyDesktopPetState(result);
+      showStatusToast(result.visible ? '桌宠已出现在桌面右下角' : '桌宠已收回');
+    } else {
+      showStatusToast('桌宠暂时无法打开');
+    }
+  } finally {
+    desktopPetToggle.disabled = false;
+  }
+});
+window.notchAPI?.getDesktopPetState?.().then(applyDesktopPetState).catch(() => {});
+window.notchAPI?.onDesktopPetVisibility?.(applyDesktopPetState);
 
 window.addEventListener('beforeunload', () => dismissStatusToast(true));
 
@@ -583,8 +609,6 @@ async function setMode(expanded) {
     } else {
       const motion = waitForPanelMotion();
       syncPanelAccessibility(false);
-      // 隐私优先：不要把摄像头释放放在 rAF 之后，隐藏窗口可能暂停动画帧。
-      stopMirror();
       await ipcBeginCollapse();
       app.classList.add('closing');
       await nextAnimationFrame();
@@ -762,6 +786,8 @@ function applyFeatureSettings(settings) {
   requestAnimationFrame(positionIndicator);
 }
 
+applyFeatureSettings({ features: { clip: false }, defaultTab: 'home' });
+
 if (window.notchAPI?.getAppSettings) {
   window.notchAPI.getAppSettings().then(applyFeatureSettings).catch(() => {});
   window.notchAPI.onAppSettingsChanged?.(applyFeatureSettings);
@@ -823,7 +849,6 @@ async function setActiveTab(name) {
   }
   tabBusy = true;
   activeTab = name;
-  if (name !== 'home') stopMirror();
   try {
     // 图片预加载等重活的调度策略：
     //   - 已展开态切 Tab：_justExpanded=false → 立即执行，保持即时响应
@@ -2429,15 +2454,15 @@ if (notePreview) {
 const HOME_ORDER_KEY = 'notch-home-order-v3';
 const HOME_SIZES_KEY = 'notch-home-widget-sizes-v2';
 const HOME_HIDDEN_MODULES_KEY = 'notch-home-hidden-modules-v1';
-const HOME_MODULE_REGISTRY = ['music', 'pomodoro', 'recorder', 'windows', 'mirror', 'note', 'commands'];
+const HOME_MODULE_REGISTRY = ['music', 'pomodoro', 'recorder', 'windows', 'agents', 'note', 'commands'];
 const unavailableHomeModules = window.NotchPlatform.capabilities(window.notchAPI?.platform || 'darwin').unavailableHomeModules;
 const effectiveHomeHidden = (hidden) => window.NotchPlatform.effectiveHiddenModules(hidden, HOME_MODULE_REGISTRY, unavailableHomeModules);
-const HOME_ORDER_DEFAULTS = ['music', 'pomodoro', 'windows', 'recorder', 'mirror', 'note', 'commands'];
+const HOME_ORDER_DEFAULTS = ['music', 'pomodoro', 'windows', 'recorder', 'agents', 'note', 'commands'];
 const HOME_SIZE_DEFAULTS = {
   music: 'medium',
   windows: 'large',
   recorder: 'small',
-  mirror: 'medium',
+  agents: 'medium',
   note: 'medium',
   commands: 'mini',
   pomodoro: 'mini',
@@ -2452,7 +2477,7 @@ function loadHomeOrder() {
   try {
     const rawSaved = JSON.parse(localStorage.getItem(HOME_ORDER_KEY) || 'null');
     const saved = Array.isArray(rawSaved)
-      ? rawSaved.map((id) => id === 'character' ? 'music' : id)
+      ? rawSaved.map((id) => id === 'character' ? 'music' : id === 'mirror' ? 'agents' : id)
       : rawSaved;
     if (
       Array.isArray(saved)
@@ -2467,7 +2492,7 @@ function loadHomeOrder() {
     if (legacy && typeof legacy === 'object') {
       const migrated = Object.entries(legacy)
         .sort((a, b) => legacySlots.indexOf(a[1]) - legacySlots.indexOf(b[1]))
-        .map(([id]) => id === 'clock' || id === 'character' ? 'music' : id)
+        .map(([id]) => id === 'clock' || id === 'character' ? 'music' : id === 'mirror' ? 'agents' : id)
         .filter((id) => HOME_ORDER_DEFAULTS.includes(id));
       if (migrated.length === HOME_ORDER_DEFAULTS.length && new Set(migrated).size === migrated.length) {
         return migrated;
@@ -2481,8 +2506,10 @@ function loadHomeOrder() {
 
 function loadHomeSizes() {
   try {
+    const saved = JSON.parse(localStorage.getItem(HOME_SIZES_KEY) || 'null');
+    if (saved && typeof saved === 'object' && !Array.isArray(saved) && !Object.hasOwn(saved, 'agents') && Object.hasOwn(saved, 'mirror')) saved.agents = saved.mirror;
     return window.NotchDomain.normalizeHomeWidgetSizes(
-      JSON.parse(localStorage.getItem(HOME_SIZES_KEY) || 'null'),
+      saved,
       HOME_SIZE_DEFAULTS,
       '',
       48
@@ -2497,7 +2524,8 @@ function loadHiddenHomeModules() {
     const rawText = localStorage.getItem(HOME_HIDDEN_MODULES_KEY);
     if (rawText === null) return { hiddenIds: [], needsRepair: false };
     const parsed = JSON.parse(rawText);
-    const hiddenIds = window.NotchDomain.normalizeHiddenHomeModules(parsed, HOME_MODULE_REGISTRY);
+    const migrated = Array.isArray(parsed) ? parsed.map(id => id === 'mirror' ? 'agents' : id) : parsed;
+    const hiddenIds = window.NotchDomain.normalizeHiddenHomeModules(migrated, HOME_MODULE_REGISTRY);
     return {
       hiddenIds,
       needsRepair: JSON.stringify(parsed) !== JSON.stringify(hiddenIds),
@@ -2732,7 +2760,6 @@ function setHomeModuleVisible(moduleId, visible) {
   if (!layout || !currentLayout) {
     return { ok: false, changed: false, error: 'layout_invalid', hiddenIds: current, persisted: homeVisibilityPersisted };
   }
-  if (moduleId === 'mirror' && visible === false) stopMirror();
   try {
     const activeElement = document.activeElement;
     const changingTile = homeTiles.find((tile) => tile.dataset.homeModule === moduleId);
@@ -2930,239 +2957,6 @@ function bindDockSurface(surface, selector, maxScale = 1.14) {
     bindDockSurface(surface, itemSelector, scale);
   });
 });
-
-// ============ 首页 · 人像镜面（局部水波折射） ============
-const homeMirror = document.querySelector('.home-mirror');
-const mirrorStage = document.getElementById('mirror-stage');
-const mirrorPhotos = Array.from(document.querySelectorAll('.mirror-photo'));
-
-function applyMirrorCover(dataUrl) {
-  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return;
-  mirrorPhotos.forEach((image) => { image.src = dataUrl; });
-}
-
-if (window.notchAPI && typeof window.notchAPI.getMirrorImage === 'function') {
-  window.notchAPI.getMirrorImage().then(applyMirrorCover).catch(() => {});
-}
-if (window.notchAPI && typeof window.notchAPI.onMirrorImageChanged === 'function') {
-  window.notchAPI.onMirrorImageChanged(applyMirrorCover);
-}
-const mirrorVideo = document.getElementById('mirror-video');
-const mirrorDisplacement = document.getElementById('mirror-displacement');
-const mirrorWaterCanvas = document.getElementById('mirror-water-canvas');
-const mirrorPixelReveal = document.getElementById('mirror-pixel-reveal');
-let mirrorLiquidFrame = null;
-let mirrorLiquidScale = 0;
-let mirrorLastPoint = null;
-let mirrorWaterFrame = null;
-let mirrorLastTrailAt = 0;
-let mirrorWaterRipples = [];
-let mirrorStream = null;
-let mirrorStarting = false;
-let mirrorZoom = 1;
-
-function replayMirrorPixelReveal() {
-  if (!mirrorPixelReveal || !homeMirror || activeTab !== 'home') return;
-  if (!mirrorPixelReveal.childElementCount) {
-    const fragment = document.createDocumentFragment();
-    for (let index = 0; index < 80; index++) {
-      const pixel = document.createElement('i');
-      const row = Math.floor(index / 10);
-      const column = index % 10;
-      pixel.style.setProperty('--pixel-delay', `${(row * 24 + column * 13 + ((row + column) % 3) * 17)}ms`);
-      fragment.appendChild(pixel);
-    }
-    mirrorPixelReveal.appendChild(fragment);
-  }
-  mirrorPixelReveal.classList.remove('revealing');
-  void mirrorPixelReveal.offsetWidth;
-  mirrorPixelReveal.classList.add('revealing');
-  setTimeout(() => mirrorPixelReveal.classList.remove('revealing'), 1120);
-}
-
-function resizeMirrorWaterCanvas() {
-  if (!mirrorWaterCanvas || !mirrorStage) return null;
-  const bounds = mirrorStage.getBoundingClientRect();
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const width = Math.max(1, Math.round(bounds.width * dpr));
-  const height = Math.max(1, Math.round(bounds.height * dpr));
-  if (mirrorWaterCanvas.width !== width || mirrorWaterCanvas.height !== height) {
-    mirrorWaterCanvas.width = width;
-    mirrorWaterCanvas.height = height;
-  }
-  return { bounds, dpr };
-}
-
-function animateMirrorWater(now) {
-  const metrics = resizeMirrorWaterCanvas();
-  const context = mirrorWaterCanvas?.getContext('2d');
-  if (!metrics || !context) {
-    mirrorWaterFrame = null;
-    return;
-  }
-  context.clearRect(0, 0, mirrorWaterCanvas.width, mirrorWaterCanvas.height);
-  mirrorWaterRipples = mirrorWaterRipples.filter((ripple) => now - ripple.startedAt < 1250);
-  context.save();
-  context.scale(metrics.dpr, metrics.dpr);
-  context.globalCompositeOperation = 'screen';
-  mirrorWaterRipples.forEach((ripple) => {
-    const progress = Math.min(1, (now - ripple.startedAt) / 1250);
-    const eased = 1 - (1 - progress) ** 3;
-    for (let ring = 0; ring < 3; ring++) {
-      const radius = 6 + eased * (34 + ripple.speed * 1.8) + ring * 7;
-      context.beginPath();
-      context.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
-      context.strokeStyle = `rgba(190, 222, 255, ${Math.max(0, (1 - progress) * (0.17 - ring * 0.035))})`;
-      context.lineWidth = Math.max(0.65, 1.55 - progress);
-      context.stroke();
-    }
-  });
-  context.restore();
-  if (mirrorWaterRipples.length) mirrorWaterFrame = requestAnimationFrame(animateMirrorWater);
-  else mirrorWaterFrame = null;
-}
-
-function addMirrorWaterRipple(x, y, speed) {
-  mirrorWaterRipples.push({ x, y, speed: Math.min(18, speed), startedAt: performance.now() });
-  if (mirrorWaterRipples.length > 18) mirrorWaterRipples.shift();
-  if (!mirrorWaterFrame) mirrorWaterFrame = requestAnimationFrame(animateMirrorWater);
-}
-
-function setMirrorZoom(value) {
-  mirrorZoom = value;
-  mirrorStage?.style.setProperty('--mirror-zoom', String(mirrorZoom));
-}
-
-function stopMirror() {
-  if (mirrorStream) {
-    mirrorStream.getTracks().forEach((track) => track.stop());
-    mirrorStream = null;
-  }
-  if (mirrorVideo) {
-    mirrorVideo.pause();
-    mirrorVideo.srcObject = null;
-  }
-  mirrorStarting = false;
-  setMirrorZoom(1);
-  if (mirrorLiquidFrame) cancelAnimationFrame(mirrorLiquidFrame);
-  mirrorLiquidFrame = null;
-  mirrorLiquidScale = 0;
-  mirrorLastPoint = null;
-  mirrorWaterRipples = [];
-  if (mirrorWaterFrame) cancelAnimationFrame(mirrorWaterFrame);
-  mirrorWaterFrame = null;
-  const waterContext = mirrorWaterCanvas?.getContext('2d');
-  waterContext?.clearRect(0, 0, mirrorWaterCanvas.width, mirrorWaterCanvas.height);
-  mirrorDisplacement?.setAttribute('scale', '0');
-  homeMirror?.classList.remove('live', 'camera-starting', 'liquid-active', 'ripple-active');
-  mirrorStage?.setAttribute('aria-label', '打开实时镜子');
-  mirrorStage?.setAttribute('aria-pressed', 'false');
-  mirrorStage?.removeAttribute('aria-busy');
-}
-
-async function startMirror() {
-  if (mirrorStarting || mirrorStream || !mirrorVideo) return;
-  mirrorStarting = true;
-  homeMirror?.classList.add('camera-starting');
-  mirrorStage?.setAttribute('aria-busy', 'true');
-  try {
-    const permitted = !window.notchAPI || typeof window.notchAPI.ensureCamera !== 'function'
-      ? true
-      : await window.notchAPI.ensureCamera();
-    if (!permitted) throw new Error('camera_permission_denied');
-    if (!mirrorStarting || !isExpanded || activeTab !== 'home') return;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: 'user',
-        width: { ideal: 1280 },
-        height: { ideal: 1280 },
-      },
-    });
-    if (!isExpanded || activeTab !== 'home' || !mirrorStarting) {
-      stream.getTracks().forEach((track) => track.stop());
-      return;
-    }
-    mirrorStream = stream;
-    mirrorVideo.srcObject = stream;
-    await mirrorVideo.play();
-    setMirrorZoom(1);
-    homeMirror?.classList.remove('liquid-active');
-    homeMirror?.classList.add('live');
-    mirrorStage?.setAttribute('aria-label', '关闭实时镜子');
-    mirrorStage?.setAttribute('aria-pressed', 'true');
-  } catch (error) {
-    stopMirror();
-    const denied = error && (
-      error.name === 'NotAllowedError' || error.message === 'camera_permission_denied'
-    );
-    showStatusToast(denied ? '需要摄像头权限才能打开镜子' : '暂时无法打开摄像头');
-  } finally {
-    mirrorStarting = false;
-    homeMirror?.classList.remove('camera-starting');
-    mirrorStage?.removeAttribute('aria-busy');
-  }
-}
-
-function animateMirrorLiquid() {
-  // 慢衰减保留轨迹长尾，Canvas 同时绘制传播中的同心波。
-  mirrorLiquidScale += (0 - mirrorLiquidScale) * 0.035;
-  mirrorDisplacement?.setAttribute('scale', mirrorLiquidScale.toFixed(2));
-  if (mirrorLiquidScale > 0.35) {
-    mirrorLiquidFrame = requestAnimationFrame(animateMirrorLiquid);
-  } else {
-    mirrorLiquidFrame = null;
-  }
-}
-
-if (mirrorStage) {
-  mirrorStage.addEventListener('pointerenter', () => {
-    if (!mirrorStream) homeMirror?.classList.add('liquid-active');
-  });
-  mirrorStage.addEventListener('pointermove', (event) => {
-    if (mirrorStream) return;
-    const bounds = mirrorStage.getBoundingClientRect();
-    const x = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-    const y = Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height));
-    const speed = mirrorLastPoint
-      ? Math.hypot(event.clientX - mirrorLastPoint.x, event.clientY - mirrorLastPoint.y)
-      : 0;
-    mirrorLastPoint = { x: event.clientX, y: event.clientY };
-    mirrorStage.style.setProperty('--liquid-x', `${(x * 100).toFixed(2)}%`);
-    mirrorStage.style.setProperty('--liquid-y', `${(y * 100).toFixed(2)}%`);
-    mirrorStage.style.setProperty('--liquid-shift-x', `${((0.5 - x) * 10).toFixed(2)}px`);
-    mirrorStage.style.setProperty('--liquid-shift-y', `${((0.5 - y) * 10).toFixed(2)}px`);
-    mirrorLiquidScale = Math.min(38, Math.max(mirrorLiquidScale, 14 + speed * 0.85));
-    if (event.timeStamp - mirrorLastTrailAt > 42 && speed > 1.5) {
-      mirrorLastTrailAt = event.timeStamp;
-      addMirrorWaterRipple(event.clientX - bounds.left, event.clientY - bounds.top, speed);
-    }
-    if (!mirrorLiquidFrame) mirrorLiquidFrame = requestAnimationFrame(animateMirrorLiquid);
-  });
-  mirrorStage.addEventListener('pointerleave', () => {
-    mirrorLastPoint = null;
-    homeMirror?.classList.remove('liquid-active');
-  });
-  mirrorStage.addEventListener('wheel', (event) => {
-    if (!window.NotchDomain.shouldHandleMirrorPinch({
-      live: Boolean(mirrorStream),
-      ctrlKey: event.ctrlKey,
-    })) return;
-    event.preventDefault();
-    setMirrorZoom(window.NotchDomain.adjustMirrorZoom(mirrorZoom, event.deltaY));
-  }, { passive: false });
-  mirrorStage.addEventListener('click', async () => {
-    if (mirrorStream || mirrorStarting) {
-      stopMirror();
-      return;
-    }
-    homeMirror?.classList.remove('ripple-active');
-    void mirrorStage.offsetWidth;
-    homeMirror?.classList.add('ripple-active');
-    setTimeout(() => homeMirror?.classList.remove('ripple-active'), 720);
-    await startMirror();
-  });
-}
 
 // ============ 首页 · 收藏剪贴 ============
 const clipfavListEl = document.getElementById('clipfav-list');

@@ -30,6 +30,7 @@ const {
   extractPageTitle,
   recordingExtension,
   normalizeWindowRows,
+  mergeCapturedWindowTitles,
   todoReminderState,
   todoReminderTimerDelay,
   taskNotificationIdentity,
@@ -55,6 +56,7 @@ const {
   normalizeDefaultTabPreference,
   updateDefaultTabPreference,
   createForegroundMediaPermissionCoordinator,
+  desktopPetBounds,
 } = require('./main-services');
 
 // Keep the historical data directory so upgrading users retain notes, links,
@@ -214,6 +216,7 @@ const CREDENTIALS_VAULT_FILE = 'credentials.vault.json';
 const APP_SETTINGS_FILE = 'app-settings.json';
 const WORKSPACE_SETTINGS_FILE = 'workspace-settings.json';
 const WORKSPACE_DATA_FILE = 'workspace.json';
+const DESKTOP_PET_STATE_FILE = 'desktop-pet.json';
 const MIRROR_IMAGE_FILE = 'mirror-cover.jpg';
 const workspacePersistenceGate = createWorkspacePersistenceGate();
 const SODA_MUSIC_APP = '/Applications/汽水音乐.app';
@@ -233,6 +236,9 @@ const TASK_NOTIFICATION_LEAVE_MS = 360;
 const TASK_NOTIFICATION_DEDUPE_MS = 2000;
 const TASK_NOTIFICATION_MAX_QUEUE = 5;
 const TASK_NOTIFICATION_BODY_LIMIT = 64 * 1024;
+const DESKTOP_PET_WIDTH = 260;
+const DESKTOP_PET_HEIGHT = 300;
+const DESKTOP_PET_MARGIN = 20;
 const TASK_NOTIFICATION_HOST = '127.0.0.1';
 const TASK_NOTIFICATION_PORT = 43821;
 // /notify/<source> 的来源白名单：只放行已知 Agent，其余一律 404。
@@ -255,6 +261,9 @@ let sodaMusicPlaying = false;
 const mediaPermissionCoordinator = createForegroundMediaPermissionCoordinator();
 
 let notificationWindow = null;
+let desktopPetWindow = null;
+let desktopPetRequestedVisible = false;
+let desktopPetMoveTimer = null;
 let notificationWindowReady = false;
 let notificationServer = null;
 let notificationServerAvailable = false;
@@ -1051,9 +1060,11 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
-  mainWindow.once('ready-to-show', () => {
+  const openingWindow = mainWindow;
+  openingWindow.once('ready-to-show', () => {
+    if (isQuitting || openingWindow.isDestroyed() || mainWindow !== openingWindow) return;
     applyMode('collapsed');
-    mainWindow.show();
+    openingWindow.show();
   });
 
   mainWindow.on('closed', () => {
@@ -1139,13 +1150,150 @@ function writeJsonFile(filePath, value) {
   }
 }
 
+function desktopPetStatePath() {
+  return getJsonSettingsPath(DESKTOP_PET_STATE_FILE);
+}
+
+function savedDesktopPetPosition() {
+  const saved = readJsonFile(desktopPetStatePath(), {});
+  return Number.isFinite(saved.x) && Number.isFinite(saved.y)
+    ? { x: saved.x, y: saved.y }
+    : null;
+}
+
+function getDesktopPetBounds(savedPosition = savedDesktopPetPosition()) {
+  const probe = savedPosition
+    ? { x: savedPosition.x, y: savedPosition.y, width: DESKTOP_PET_WIDTH, height: DESKTOP_PET_HEIGHT }
+    : null;
+  const display = probe ? screen.getDisplayMatching(probe) : getWindowDisplay();
+  return desktopPetBounds(
+    display,
+    { width: DESKTOP_PET_WIDTH, height: DESKTOP_PET_HEIGHT },
+    savedPosition,
+    DESKTOP_PET_MARGIN
+  );
+}
+
+function notifyDesktopPetVisibility() {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('desktop-pet:visibility', {
+      visible: desktopPetRequestedVisible,
+    });
+  }
+}
+
+function persistDesktopPetPosition(targetWindow) {
+  if (!targetWindow || targetWindow.isDestroyed()) return;
+  const { x, y } = targetWindow.getBounds();
+  writeJsonFile(desktopPetStatePath(), { x, y });
+}
+
+function createDesktopPetWindow() {
+  if (desktopPetWindow && !desktopPetWindow.isDestroyed()) return desktopPetWindow;
+  desktopPetWindow = new BrowserWindow({
+    ...getDesktopPetBounds(),
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    resizable: false,
+    movable: true,
+    focusable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    acceptFirstMouse: true,
+    hiddenInMissionControl: true,
+    fullscreenable: false,
+    minimizable: false,
+    maximizable: false,
+    roundedCorners: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'renderer', 'pet-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  installLocalWebContentsGuards(desktopPetWindow.webContents);
+  const targetWindow = desktopPetWindow;
+  targetWindow.setAlwaysOnTop(true, 'floating');
+  if (process.platform === 'darwin') {
+    targetWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  if (process.platform === 'win32') targetWindow.setMenu(null);
+  targetWindow.loadFile(path.join(__dirname, 'renderer', 'pet.html'));
+  targetWindow.on('move', () => {
+    if (desktopPetMoveTimer) clearTimeout(desktopPetMoveTimer);
+    desktopPetMoveTimer = setTimeout(() => {
+      desktopPetMoveTimer = null;
+      persistDesktopPetPosition(targetWindow);
+    }, 180);
+  });
+  targetWindow.on('closed', () => {
+    if (desktopPetMoveTimer) clearTimeout(desktopPetMoveTimer);
+    desktopPetMoveTimer = null;
+    if (desktopPetWindow === targetWindow) desktopPetWindow = null;
+    desktopPetRequestedVisible = false;
+    notifyDesktopPetVisibility();
+  });
+  targetWindow.webContents.on('render-process-gone', () => {
+    if (!targetWindow.isDestroyed()) targetWindow.destroy();
+  });
+  return targetWindow;
+}
+
+function showDesktopPet() {
+  desktopPetRequestedVisible = true;
+  const targetWindow = createDesktopPetWindow();
+  const show = () => {
+    if (!desktopPetRequestedVisible || targetWindow.isDestroyed()) return;
+    targetWindow.setBounds(getDesktopPetBounds(targetWindow.getBounds()));
+    targetWindow.showInactive();
+    notifyDesktopPetVisibility();
+  };
+  if (targetWindow.webContents.isLoadingMainFrame()) {
+    targetWindow.webContents.once('did-finish-load', show);
+  } else {
+    show();
+  }
+  return { ok: true, visible: true };
+}
+
+function hideDesktopPet() {
+  desktopPetRequestedVisible = false;
+  if (desktopPetWindow && !desktopPetWindow.isDestroyed()) {
+    persistDesktopPetPosition(desktopPetWindow);
+    desktopPetWindow.hide();
+  }
+  notifyDesktopPetVisibility();
+  return { ok: true, visible: false };
+}
+
+ipcMain.handle('desktop-pet:state', () => ({ visible: desktopPetRequestedVisible }));
+ipcMain.handle('desktop-pet:toggle', (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    return { ok: false, error: 'forbidden' };
+  }
+  return desktopPetRequestedVisible ? hideDesktopPet() : showDesktopPet();
+});
+ipcMain.handle('desktop-pet:hide', (event) => {
+  const allowed = (
+    desktopPetWindow && !desktopPetWindow.isDestroyed() && event.sender === desktopPetWindow.webContents
+  ) || (
+    mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents
+  );
+  return allowed ? hideDesktopPet() : { ok: false, error: 'forbidden' };
+});
+
 function readAppSettings() {
   const stored = readJsonFile(getJsonSettingsPath(APP_SETTINGS_FILE));
   const features = { ...DEFAULT_FEATURES, ...(stored.features || {}), home: true };
   return {
     features,
     shortcut: isValidPanelShortcut(stored.shortcut) ? stored.shortcut : 'Space',
-    defaultTab: normalizeDefaultTabPreference(stored.defaultTab, features),
+    defaultTab: normalizeDefaultTabPreference(stored.defaultTab ?? 'home', features),
   };
 }
 
@@ -1342,15 +1490,11 @@ function refreshTrayMenu() {
   if (!tray) return;
   const autoLaunch = isAutoLaunchEnabled();
   const settings = readAppSettings();
-  const featureLabels = { todo: '待办', notes: '笔记', links: '链接', recordings: '录制', credentials: '密钥', clip: '剪贴板' };
+  const featureLabels = { todo: '待办', notes: '笔记', links: '链接', recordings: '转文字', credentials: '密钥', clip: '剪贴板' };
   const menu = Menu.buildFromTemplate([
     {
       label: 'API 配置…',
       click: () => openRendererPanel('app:open-api-settings'),
-    },
-    {
-      label: '替换镜子配图…',
-      click: chooseMirrorImage,
     },
     {
       label: '显示功能',
@@ -1584,6 +1728,26 @@ ipcMain.handle('media:microphone', () => requestMacMediaAccess('microphone'));
 ipcMain.handle('tasks:recent', () => taskCompletionHistory);
 
 // 快捷链接：URL 走外部浏览器（仅 http/https），本地路径走系统打开（仅绝对路径）
+let agentUsageRequest = null;
+ipcMain.handle('agents:usage', () => {
+  if (agentUsageRequest) return agentUsageRequest;
+  const usage = require('./agent-usage');
+  const cachePath = path.join(app.getPath('userData'), 'agent-usage.json');
+  const bundledCodex = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
+  // GUI apps launched from Finder do not inherit the shell's environment.
+  // Reuse the encrypted DeepSeek key configured in the transcription settings
+  // so Agent HUD refreshes work regardless of how the app was opened.
+  const apiKey = String(process.env.DEEPSEEK_API_KEY || resolveLlmConfig().apiKey || '').trim();
+  agentUsageRequest = usage.refreshAgentUsage({
+    snapshotPath: require('node:fs').existsSync(cachePath) ? cachePath : path.join(__dirname, '.local', 'agent-usage.json'),
+    cachePath,
+    apiKey,
+    codexReader: () => usage.queryCodex(process.env.CODEX_CLI_PATH || (require('node:fs').existsSync(bundledCodex) ? bundledCodex : 'codex')),
+    grokReader: process.platform === 'darwin' ? () => usage.readGrokCache(path.join(app.getPath('home'), 'Library', 'Application Support', 'Grok Bot', 'sand-client-persistence')) : null,
+  }).finally(() => { agentUsageRequest = null; });
+  return agentUsageRequest;
+});
+
 ipcMain.handle('shell:openExternal', (event, url) => {
   if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
     return shell.openExternal(url);
@@ -1926,7 +2090,7 @@ function run() {
       candidates += 1;
       if (title) titled += 1;
     }
-    if (layer !== 0 || !pid || !appName || !title || !windowNumber) continue;
+    if (layer !== 0 || !pid || !appName || !windowNumber) continue;
     if (!Object.prototype.hasOwnProperty.call(appPaths, pid)) {
       const meta = { appPath: '', policy: -1 };
       try {
@@ -2015,7 +2179,17 @@ async function scanCurrentWindows() {
     const payload = Array.isArray(parsed)
       ? { rows: parsed, candidates: parsed.length, titled: parsed.length }
       : parsed;
-    const rows = normalizeWindowRows(payload.rows || []).filter((item) => item.pid !== process.pid);
+    let sourceRows = payload.rows || [];
+    if (Number(payload.candidates) > 0 && Number(payload.titled) === 0
+        && systemPreferences.getMediaAccessStatus('screen') === 'granted') {
+      const captured = await desktopCapturer.getSources({
+        types: ['window'],
+        thumbnailSize: { width: 0, height: 0 },
+        fetchWindowIcons: false,
+      });
+      sourceRows = mergeCapturedWindowTitles(sourceRows, captured);
+    }
+    const rows = normalizeWindowRows(sourceRows).filter((item) => item.pid !== process.pid);
     // 有候选窗口却一个标题都读不到 = 缺「屏幕录制」权限。macOS 10.15 起读取其他应用的
     // 窗口标题需要该权限，系统不会报错也不会弹提示，只是静默返回空标题，
     // 结果界面上只剩一句「没有读取到可切换窗口」，把权限问题伪装成了「真的没窗口」。
@@ -3342,6 +3516,11 @@ function watchDisplayChanges() {
       if (notificationWindow && !notificationWindow.isDestroyed() && notificationWindow.isVisible()) {
         notificationWindow.setBounds(getTaskNotificationBounds());
       }
+      if (desktopPetWindow && !desktopPetWindow.isDestroyed()) {
+        const current = desktopPetWindow.getBounds();
+        const next = getDesktopPetBounds(current);
+        if (current.x !== next.x || current.y !== next.y) desktopPetWindow.setBounds(next);
+      }
     }, 100);
   };
   screen.on('display-added', reposition);
@@ -3349,7 +3528,23 @@ function watchDisplayChanges() {
   screen.on('display-metrics-changed', reposition);
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (app.commandLine.hasSwitch('screen-permission-check')) {
+    const status = systemPreferences.getMediaAccessStatus('screen');
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['window'],
+        thumbnailSize: { width: 0, height: 0 },
+        fetchWindowIcons: false,
+      });
+      process.stdout.write(`${JSON.stringify({ status, windowCount: sources.length })}\n`);
+    } catch (error) {
+      process.stdout.write(`${JSON.stringify({ status, windowCount: 0, error: error.message })}\n`);
+    }
+    app.quit();
+    return;
+  }
+
   if (process.platform === 'win32') app.setAppUserModelId('com.dynamicpanel.app');
   if (process.platform === 'darwin' && app.dock) {
     app.dock.hide();
@@ -3385,6 +3580,7 @@ app.on('will-quit', () => {
   clearTodoReminderTimer();
   stopHoverSpaceShortcut();
   clearTaskNotificationTimers();
+  if (desktopPetMoveTimer) clearTimeout(desktopPetMoveTimer);
   stopTaskNotificationServer();
   closeAllTranscriptionSessions();
   globalShortcut.unregisterAll();

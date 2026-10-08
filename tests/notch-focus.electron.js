@@ -215,7 +215,7 @@ async function main() {
             display: getComputedStyle(page).display,
             columns: getComputedStyle(page).gridTemplateColumns.split(' ').filter(Boolean).length,
             api: Boolean(document.getElementById('settings-api-configure')),
-            mirror: Boolean(document.getElementById('settings-mirror-choose')),
+            agentWidget: Boolean(document.querySelector('[data-settings-home-module="agents"]')),
             features: document.querySelectorAll('[data-settings-feature]').length,
             homeModules: document.querySelectorAll('[data-settings-home-module]').length,
             shortcut: Boolean(document.getElementById('settings-shortcut-change')),
@@ -239,7 +239,7 @@ async function main() {
       display: 'grid',
       columns: 2,
       api: true,
-      mirror: true,
+      agentWidget: true,
       features: 6,
       homeModules: 7,
       shortcut: true,
@@ -386,6 +386,7 @@ async function main() {
           };
           window.notchAPI = {
             ...originalApi,
+            getTranscriptionConfig: async () => ({ configured: true }),
             ensureMicrophone: () => {
               permissionRequests += 1;
               return new Promise((resolve) => { releasePermission = resolve; });
@@ -638,7 +639,7 @@ async function main() {
           pomodoro: ['.pomodoro-readout', '.pomodoro-toggle', '.pomodoro-reset:not([hidden])'],
           recorder: ['.recorder-head', '.home-transcript:not([hidden])', '.recorder-controls'],
           windows: ['.tile-head', '.window-list'],
-          mirror: ['.mirror-stage'],
+          agents: ['.home-agents-head', '.home-agents-accounts'],
           note: ['.note-toolbar', '.note-body'],
           commands: ['.tile-head', '.command-add', '.command-list'],
         };
@@ -749,7 +750,7 @@ async function main() {
       window.setSize(width, height);
       const matrix = await window.webContents.executeJavaScript(`
         (async () => {
-          const ids = ['music', 'pomodoro', 'recorder', 'windows', 'mirror', 'note', 'commands'];
+          const ids = ['music', 'pomodoro', 'recorder', 'windows', 'agents', 'note', 'commands'];
           ids.forEach((id) => window.NotchHome.setModuleVisible(id, true));
           const results = [];
           for (let count = 7; count >= 1; count -= 1) {
@@ -792,9 +793,9 @@ async function main() {
 
     const transactionAudit = await window.webContents.executeJavaScript(`
       (() => {
-        const ids = ['music', 'pomodoro', 'recorder', 'windows', 'mirror', 'note', 'commands'];
+        const ids = ['music', 'pomodoro', 'recorder', 'windows', 'agents', 'note', 'commands'];
         ids.forEach((id) => window.NotchHome.setModuleVisible(id, true));
-        const first = window.NotchHome.setModuleVisible('mirror', false);
+        const first = window.NotchHome.setModuleVisible('agents', false);
         const second = window.NotchHome.setModuleVisible('note', false);
         const rapidHidden = [...window.NotchHome.getVisibility().hiddenIds];
         ids.forEach((id) => window.NotchHome.setModuleVisible(id, true));
@@ -850,7 +851,7 @@ async function main() {
     `);
     assert.equal(transactionAudit.first.ok, true);
     assert.equal(transactionAudit.second.ok, true);
-    assert.deepEqual(transactionAudit.rapidHidden, ['mirror', 'note']);
+    assert.deepEqual(transactionAudit.rapidHidden, ['agents', 'note']);
     assert.equal(transactionAudit.noop.changed, false);
     assert.equal(transactionAudit.eventCount, 0);
     assert.equal(transactionAudit.noOpStorageStable, true);
@@ -863,7 +864,7 @@ async function main() {
 
     const persistenceAndRecorderAudit = await window.webContents.executeJavaScript(`
       (() => {
-        const ids = ['music', 'pomodoro', 'recorder', 'windows', 'mirror', 'note', 'commands'];
+        const ids = ['music', 'pomodoro', 'recorder', 'windows', 'agents', 'note', 'commands'];
         ids.forEach((id) => window.NotchHome.setModuleVisible(id, true));
         const originalSetItem = Storage.prototype.setItem;
         const storedBefore = localStorage.getItem('notch-home-hidden-modules-v1');
@@ -871,7 +872,7 @@ async function main() {
           if (key === 'notch-home-hidden-modules-v1') throw new Error('simulated quota failure');
           return originalSetItem.call(this, key, value);
         };
-        const degraded = window.NotchHome.setModuleVisible('mirror', false);
+        const degraded = window.NotchHome.setModuleVisible('agents', false);
         const degradedState = window.NotchHome.getVisibility();
         const degradedStatus = document.getElementById('settings-home-module-status').textContent;
         const degradedStorageStable = storedBefore === localStorage.getItem('notch-home-hidden-modules-v1');
@@ -990,7 +991,7 @@ async function main() {
 
     const lifecycleAudit = await window.webContents.executeJavaScript(`
       (async () => {
-        const ids = ['music', 'pomodoro', 'recorder', 'windows', 'mirror', 'note', 'commands'];
+        const ids = ['music', 'pomodoro', 'recorder', 'windows', 'agents', 'note', 'commands'];
         ids.forEach((id) => window.NotchHome.setModuleVisible(id, true));
         document.getElementById('tab-button-home').click();
         document.getElementById('app').classList.remove('collapsed', 'closing', 'opening');
@@ -1097,7 +1098,7 @@ async function main() {
 
     const autoLayoutMotionAudit = await window.webContents.executeJavaScript(`
       (async () => {
-        const ids = ['music', 'pomodoro', 'recorder', 'windows', 'mirror', 'note', 'commands'];
+        const ids = ['music', 'pomodoro', 'recorder', 'windows', 'agents', 'note', 'commands'];
         ids.forEach((id) => window.NotchHome.setModuleVisible(id, true));
         document.getElementById('tab-button-home').click();
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));

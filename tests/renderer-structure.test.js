@@ -7,6 +7,8 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
 const workspaceJs = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'workspace.js'), 'utf8');
 const effectsJs = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'effects.js'), 'utf8');
+const petHtml = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'pet.html'), 'utf8');
+const petCss = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'pet.css'), 'utf8');
 
 test('clipboard rows define both favorite icons before rendering entries', () => {
   assert.match(appJs, /const starOutlineSvg\s*=/);
@@ -48,7 +50,7 @@ test('homepage visibility has one storage key, exact validation, and lifecycle e
   assert.match(appJs, /window\.NotchHome\s*=/);
   assert.match(appJs, /notch:home-modules-changed/);
   assert.match(appJs, /notch:home-layout-error/);
-  assert.match(appJs, /stopMirror\(\)/);
+  assert.doesNotMatch(html, /id="mirror-stage"|id="mirror-video"/);
   assert.match(appJs, /new Set\(homeTiles\.map\(\(tile\) => tile\.dataset\.homeModule\)\)/);
 });
 
@@ -56,7 +58,7 @@ test('settings exposes exactly one switch for every homepage widget', () => {
   const switches = [...html.matchAll(/data-settings-home-module="([^"]+)"/g)]
     .map((match) => match[1]);
   assert.deepEqual(switches, [
-    'music', 'pomodoro', 'recorder', 'windows', 'mirror', 'note', 'commands',
+    'music', 'pomodoro', 'recorder', 'windows', 'agents', 'note', 'commands',
   ]);
   assert.match(workspaceJs, /isRecordingActive/);
   assert.match(workspaceJs, /recording_active/);
@@ -76,4 +78,13 @@ test('hidden visual widgets stop presentation-only background work', () => {
   assert.match(effectsJs, /setEnabled/);
   assert.match(effectsJs, /notch:home-modules-changed/);
   assert.match(workspaceJs, /NotchHome\?\.isVisible/);
+});
+
+test('desktop pet has a panel toggle, transparent draggable surface and a retract control', () => {
+  assert.match(html, /id="desktop-pet-toggle"/);
+  assert.match(petHtml, /desktop-pet-blue-fox\.png/);
+  assert.match(petHtml, /id="pet-hide"/);
+  assert.match(petCss, /-webkit-app-region:\s*drag/);
+  assert.match(petCss, /-webkit-app-region:\s*no-drag/);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'renderer', 'assets', 'generated', 'desktop-pet-blue-fox.png')), true);
 });

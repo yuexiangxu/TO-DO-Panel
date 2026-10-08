@@ -727,8 +727,6 @@
   const settingsLlmStatus = document.getElementById('settings-llm-status');
   const settingsFeatureList = document.getElementById('settings-feature-list');
   const settingsHomeModuleList = document.getElementById('settings-home-module-list');
-  const settingsMirrorPreview = document.getElementById('settings-mirror-preview');
-  const settingsMirrorChoose = document.getElementById('settings-mirror-choose');
   const settingsShortcutValue = document.getElementById('settings-shortcut-value');
   const settingsShortcutChange = document.getElementById('settings-shortcut-change');
   const settingsDefaultTab = document.getElementById('settings-default-tab');
@@ -926,11 +924,7 @@
     settingsInlineNote.classList.toggle('error', error);
   }
 
-  function applySettingsMirrorCover(dataUrl) {
-    if (settingsMirrorPreview && typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
-      settingsMirrorPreview.src = dataUrl;
-    }
-  }
+
 
   function renderSettingsPanel() {
     const summary = Domain.settingsSummary({
@@ -998,11 +992,10 @@
 
   async function refreshSettingsPanel() {
     if (!window.notchAPI) return;
-    const [appSettings, workspace, config, mirrorImage] = await Promise.all([
+    const [appSettings, workspace, config] = await Promise.all([
       window.notchAPI.getAppSettings?.().catch(() => null),
       window.notchAPI.getWorkspace?.().catch(() => null),
       window.notchAPI.getTranscriptionConfig?.().catch(() => null),
-      window.notchAPI.getMirrorImage?.().catch(() => null),
     ]);
     if (appSettings) settingsAppSettings = appSettings;
     if (workspace) settingsWorkspace = workspace;
@@ -1011,7 +1004,6 @@
       updateTranscriptionConfigUi();
       updateRecordingUi();
     }
-    applySettingsMirrorCover(mirrorImage);
     renderSettingsPanel();
   }
 
@@ -1034,7 +1026,7 @@
       ? '检测到旧版加密密钥，但升级后无法解密。请重新输入通义百炼与 DeepSeek 两把 API Key。'
       : transcriptionConfig.configured || transcriptionConfig.llmConfigured
         ? '已配置的 API Key 可留空；新输入的密钥会覆盖对应旧值。'
-        : '请分别配置通义百炼实时转写与 DeepSeek 两把 API Key。';
+        : '录音转文字只需配置通义百炼 API Key；DeepSeek 仅用于可选的智能命名。保存后点击开始转写。';
     if (transcriptionApiKey) transcriptionApiKey.value = '';
     if (llmApiKey) llmApiKey.value = '';
     updateTranscriptionConfigUi();
@@ -1143,7 +1135,7 @@
     if (transcriptionAudioGap) return '断线期间部分转写可能缺失 · 完整音频仍在本机录制';
     if (recordingStatus === 'paused') return '录音已暂停';
     if (!transcriptionConfig.configured && !currentRecordingText()) return '未配置转写 API · 音频仍会保存在本机';
-    return '正在录音';
+    return '正在录音转文字';
   }
 
   function beginRecordingDraft() {
@@ -1260,7 +1252,12 @@
   async function startCloudTranscription() {
     if (!transcriptionConfig.configured || !window.notchAPI || !mediaStream) return { ok: false, error: 'not_configured' };
     transcriptionStatus = 'connecting';
-    startTranscriptionAudioPipeline(mediaStream);
+    if (!startTranscriptionAudioPipeline(mediaStream)) {
+      transcriptionStatus = 'error';
+      recordingCaptureIssue = '无法启动语音转写音频处理 · 原始录音仍会保存';
+      updateRecordingUi();
+      return { ok: false, error: 'audio_pipeline_failed' };
+    }
     updateRecordingUi();
     let result;
     try {
@@ -1327,12 +1324,12 @@
       recordingStateLabel.textContent = recordingStartTask.isPending()
         ? '等待录音权限'
         : recordingStatus === 'recording'
-        ? '正在录音'
+        ? '录音转文字中'
         : recordingStatus === 'paused'
           ? '已暂停'
           : recordingStatus === 'saving'
             ? '正在保存'
-            : '快速录音';
+            : '录音转文字';
     }
     if (recordingTime) recordingTime.textContent = formatClock(recordingActive ? currentDuration() : 0);
     if (recordStart) recordStart.disabled = recordingBusy;
@@ -1344,10 +1341,10 @@
     if (recordStop) recordStop.disabled = !['recording', 'paused'].includes(recordingStatus);
     if (recordingNew) {
       recordingNew.disabled = recordingBusy;
-      recordingNew.textContent = recordingBusy ? '录制' : '录音';
+      recordingNew.textContent = recordingBusy ? '转写中' : '开始转写';
       recordingNew.setAttribute('aria-label', recordingStartTask.isPending()
         ? '正在请求麦克风权限'
-        : recordingActive ? '录音进行中' : '开始录音');
+        : recordingActive ? '录音进行中' : '开始录音转文字');
     }
     if (liveTranscript && recordingBusy) {
       const text = currentRecordingText();
@@ -1360,6 +1357,10 @@
         || ['error', 'reconnecting', 'connecting', 'browser-error'].includes(transcriptionStatus);
       liveTranscript.textContent = needsAttention && text ? `${fallback}\n${text}` : text || fallback;
       liveTranscript.hidden = !(text || fallback);
+    }
+    if (liveTranscript && !recordingBusy && !liveTranscript.textContent) {
+      liveTranscript.textContent = transcriptionConfig.configured ? '边说边转文字，结束后自动保存' : '首次使用请先配置百炼语音识别';
+      liveTranscript.hidden = false;
     }
     syncRecordingDraftUi();
     renderHomeModuleSettings();
@@ -1513,6 +1514,22 @@
 
   async function startRecordingAttempt() {
     if (recordingStatus !== 'idle' || !navigator.mediaDevices || !window.MediaRecorder) return;
+    // Check the actual ASR configuration before asking for microphone access.
+    try {
+      const config = await window.notchAPI?.getTranscriptionConfig?.();
+      if (!config) throw new Error('configuration_unavailable');
+      transcriptionConfig = config;
+    } catch {
+      liveTranscript.textContent = '无法读取转写配置，请重试';
+      liveTranscript.hidden = false;
+      return;
+    }
+    if (!transcriptionConfig.configured || transcriptionConfig.asrNeedsReentry) {
+      openTranscriptionSettings();
+      liveTranscript.textContent = '先配置百炼语音识别，再开始录音转文字';
+      liveTranscript.hidden = false;
+      return;
+    }
     try {
       if (window.notchAPI && !(await window.notchAPI.ensureMicrophone())) {
         if (liveTranscript) {
@@ -1574,8 +1591,6 @@
       beginRecordingDraft();
       if (transcriptionConfig.configured) {
         transcriptionStartPromise = startCloudTranscription();
-      } else {
-        startSpeechRecognition();
       }
       clearInterval(recordingTimer);
       recordingTimer = setInterval(updateRecordingUi, 500);
@@ -1635,6 +1650,36 @@
     }
   }
 
+  async function copyTranscriptText(text) {
+    if (!String(text || '').trim()) {
+      showStatusToast('暂无已识别的文字可复制');
+      return false;
+    }
+    try {
+      const copied = await window.notchAPI?.writeClipboard({ type: 'text', text });
+      if (!copied) throw new Error('clipboard_unavailable');
+      showStatusToast('转写文字已复制');
+      return true;
+    } catch {
+      showStatusToast('复制失败，请重试');
+      return false;
+    }
+  }
+  document.getElementById('record-transcript-copy')?.addEventListener('click', async () => {
+    // Copy only confirmed text, never interim hypotheses or status messages.
+    const text = isRecordingBusy() ? recordingTranscript : recordings.find(row => !row.isDraft)?.transcript;
+    await copyTranscriptText(text);
+  });
+  document.getElementById('record-transcript-configure')?.addEventListener('click', openTranscriptionSettings);
+  document.getElementById('record-transcript-open')?.addEventListener('click', async () => {
+    if (recordingDraftId) selectedRecordingId = recordingDraftId;
+    renderRecordings();
+    if (!TABS.includes('recordings')) {
+      showStatusToast('请在设置中开启“转文字”页面');
+      return;
+    }
+    await setActiveTab('recordings');
+  });
   if (recordStart) recordStart.addEventListener('click', startRecording);
   if (recordPause) recordPause.addEventListener('click', togglePauseRecording);
   if (recordStop) recordStop.addEventListener('click', stopRecording);
@@ -1694,7 +1739,7 @@
       const message = result?.error === 'at_least_one_required'
         ? '首页至少保留一个组件'
         : result?.error === 'recording_active'
-          ? '录音进行中，暂时不能隐藏快速录音'
+          ? '录音进行中，暂时不能隐藏录音转文字'
           : result?.error === 'layout_read_only'
             ? '首页布局已进入安全模式，本次会话不能修改组件'
             : result?.error === 'layout_invalid'
@@ -1710,19 +1755,6 @@
       ? '布局已更新，仅当前会话生效，设置未能保存'
       : input.checked ? '首页组件已恢复' : '首页组件已隐藏';
     if (typeof showStatusToast === 'function') showStatusToast(message);
-  });
-  settingsMirrorChoose?.addEventListener('click', async () => {
-    if (!window.notchAPI?.chooseMirrorImage) return;
-    settingsMirrorChoose.disabled = true;
-    const result = await window.notchAPI.chooseMirrorImage().catch(() => ({ ok: false }));
-    settingsMirrorChoose.disabled = false;
-    if (result?.canceled) return;
-    if (!result?.ok) {
-      setSettingsNote('镜子配图替换失败。', true);
-      return;
-    }
-    applySettingsMirrorCover(result.dataUrl);
-    setSettingsNote('首页镜子配图已更新。');
   });
   settingsShortcutChange?.addEventListener('click', () => {
     document.dispatchEvent(new CustomEvent('notch:record-shortcut'));
@@ -1771,7 +1803,6 @@
     renderSettingsPanel();
   });
   window.notchAPI?.onWorkspaceChanged?.(() => refreshSettingsPanel());
-  window.notchAPI?.onMirrorImageChanged?.(applySettingsMirrorCover);
 
   async function loadRecordingAudio(recording, container) {
     if (!window.notchAPI || !recording.audioPath) return;
@@ -1911,8 +1942,8 @@
     actions.addEventListener('click', async (event) => {
       const action = event.target.closest('[data-action]');
       if (!action) return;
-      if (action.dataset.action === 'copy-recording' && window.notchAPI && recording.transcript) {
-        await window.notchAPI.writeClipboard({ type: 'text', text: recording.transcript });
+      if (action.dataset.action === 'copy-recording') {
+        await copyTranscriptText(recording.transcript);
       }
       if (action.dataset.action === 'reveal-recording' && window.notchAPI && recording.audioPath) {
         await window.notchAPI.revealRecording(recording.audioPath);

@@ -31,6 +31,7 @@
     "files": [
       "main.js",
       "main-services.js",
+      "agent-usage.js",
       "platform.js",
       "build/to-do-panel-icon.png",
       "preload.js",
@@ -66,6 +67,7 @@
         "CFBundleDisplayName": "TO-DO Panel",
         "NSCameraUsageDescription": "TO-DO Panel 需要使用摄像头来显示「镜子」预览。",
         "NSMicrophoneUsageDescription": "TO-DO Panel 需要使用麦克风来录音并生成转写文本。",
+        "NSScreenCaptureUsageDescription": "TO-DO Panel 需要读取窗口信息，用于在工作台显示并快速切换当前窗口。",
         "NSAppleEventsUsageDescription": "TO-DO Panel 需要控制「系统事件」来枚举并聚焦当前窗口、发送汽水音乐快捷键。"
       }
     },
