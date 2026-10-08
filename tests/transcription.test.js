@@ -194,7 +194,7 @@ test('stop during initial connection settles start immediately and leaves no tim
 test('late start reply cannot hide an already reported reconnect', async () => {
   const h = rendererHarness();
   const source = fs.readFileSync(require.resolve('../renderer/workspace.js'), 'utf8');
-  Object.assign(h.context, { mediaStream: {}, startTranscriptionAudioPipeline() {} });
+  Object.assign(h.context, { mediaStream: {}, startTranscriptionAudioPipeline() { return true; } });
   h.context.window.notchAPI.startTranscription = async () => {
     h.event({ type: 'status', status: 'reconnecting' });
     return { ok: true };
@@ -202,4 +202,32 @@ test('late start reply cannot hide an already reported reconnect', async () => {
   vm.runInContext(source.slice(source.indexOf('  async function startCloudTranscription()'), source.indexOf('  async function finishCloudTranscription()')), h.context);
   await h.context.startCloudTranscription();
   assert.equal(h.context.transcriptionStatus, 'reconnecting');
+});
+
+test('speech-to-text checks ASR configuration before accessing the microphone', async () => {
+  const source = fs.readFileSync(require.resolve('../renderer/workspace.js'), 'utf8');
+  for (const config of [{configured:false,llmConfigured:true},{configured:true,asrNeedsReentry:true},null,{configured:true}]) {
+    let microphoneCalls=0, settingsCalls=0;
+    const context=vm.createContext({
+      recordingStatus:'idle',navigator:{mediaDevices:{}},window:{MediaRecorder:{},notchAPI:{
+        getTranscriptionConfig:async()=>config,
+        ensureMicrophone:async()=>{microphoneCalls++;return false},
+      }},transcriptionConfig:{configured:true},liveTranscript:{textContent:'',hidden:true},
+      openTranscriptionSettings:()=>{settingsCalls++},
+    });
+    vm.runInContext(source.slice(source.indexOf('  async function startRecordingAttempt()'),source.indexOf('  function startRecording()')),context);
+    await context.startRecordingAttempt();
+    assert.equal(microphoneCalls,config?.configured&&!config.asrNeedsReentry?1:0);
+    assert.equal(settingsCalls,config&&(!config.configured||config.asrNeedsReentry)?1:0);
+    assert.equal(context.liveTranscript.hidden,false);
+  }
+});
+test('audio pipeline failure reports an error without starting a cloud session',async()=>{
+  const h=rendererHarness();let calls=0;
+  Object.assign(h.context,{mediaStream:{},startTranscriptionAudioPipeline:()=>false});
+  h.context.window.notchAPI.startTranscription=async()=>{calls++;return{ok:true}};
+  const source=fs.readFileSync(require.resolve('../renderer/workspace.js'),'utf8');
+  vm.runInContext(source.slice(source.indexOf('  async function startCloudTranscription()'),source.indexOf('  async function finishCloudTranscription()')),h.context);
+  assert.equal((await h.context.startCloudTranscription()).error,'audio_pipeline_failed');
+  assert.equal(calls,0);assert.match(h.context.recordingCaptureIssue,/音频处理/);
 });

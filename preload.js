@@ -9,10 +9,15 @@ function subscribe(channel, handler) {
 
 contextBridge.exposeInMainWorld('notchAPI', {
   platform: process.platform,
+  getAgentUsage: () => ipcRenderer.invoke('agents:usage'),
   setMode: (mode) => ipcRenderer.invoke('window:set-mode', mode),
   beginCollapse: () => ipcRenderer.invoke('window:begin-collapse'),
   setTab: (tab) => ipcRenderer.invoke('window:set-tab', tab),
   setTypingMode: (active) => ipcRenderer.send('window:set-typing-mode', active === true),
+  getDesktopPetState: () => ipcRenderer.invoke('desktop-pet:state'),
+  toggleDesktopPet: () => ipcRenderer.invoke('desktop-pet:toggle'),
+  hideDesktopPet: () => ipcRenderer.invoke('desktop-pet:hide'),
+  onDesktopPetVisibility: (cb) => subscribe('desktop-pet:visibility', (event, state) => cb(state)),
   ensureCamera: () => ipcRenderer.invoke('media:camera'),
   ensureMicrophone: () => ipcRenderer.invoke('media:microphone'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),

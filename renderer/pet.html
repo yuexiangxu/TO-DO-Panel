@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TO-DO Panel 桌宠</title>
+  <link rel="stylesheet" href="pet.css" />
+  <script src="pet.js" defer></script>
+</head>
+<body>
+  <main class="desktop-pet" id="desktop-pet" aria-label="蓝白小兽桌宠">
+    <div class="aura" aria-hidden="true"></div>
+    <button class="pet-hide" id="pet-hide" type="button" aria-label="收回桌宠" title="收回桌宠">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 12h10M12 7l5 5-5 5"/></svg>
+    </button>
+    <img class="pet-character" src="assets/generated/desktop-pet-blue-fox.png" alt="蓝白色花晶小兽" draggable="false" />
+    <div class="pet-shadow" aria-hidden="true"></div>
+    <div class="pet-message" aria-hidden="true">今天也要闪闪发光 ✦</div>
+  </main>
+</body>
+</html>

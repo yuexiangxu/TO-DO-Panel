@@ -7,6 +7,7 @@ const {
   extractFaviconHref,
   recordingExtension,
   normalizeWindowRows,
+  mergeCapturedWindowTitles,
   todoReminderState,
   todoReminderTimerDelay,
   taskNotificationIdentity,
@@ -31,7 +32,24 @@ const {
   hoverSpacePollingPolicy,
   reduceClipboardObservation,
   createForegroundMediaPermissionCoordinator,
+  desktopPetBounds,
 } = require('../main-services');
+
+test('desktop pet opens at the work-area bottom-right and keeps restored positions visible', () => {
+  const display = { workArea: { x: 100, y: 40, width: 1200, height: 760 } };
+  assert.deepEqual(desktopPetBounds(display, { width: 260, height: 300 }, null, 20), {
+    x: 1020,
+    y: 480,
+    width: 260,
+    height: 300,
+  });
+  assert.deepEqual(desktopPetBounds(display, { width: 260, height: 300 }, { x: -900, y: 1200 }, 20), {
+    x: 100,
+    y: 500,
+    width: 260,
+    height: 300,
+  });
+});
 
 test('media permission prompts temporarily leave the screen-saver window layer', async () => {
   const events = [];
@@ -259,6 +277,20 @@ test('normalizeWindowRows keeps all named CGWindow entries with stable window id
     'window-10-502',
     'window-10-503',
   ]);
+});
+
+test('mergeCapturedWindowTitles uses Electron capture titles for protected CGWindow rows', () => {
+  const rows = mergeCapturedWindowTitles([
+    { pid: 10, appName: 'Code', title: '', windowNumber: 501 },
+    { pid: 11, appName: 'Finder', title: 'Downloads', windowNumber: 502 },
+  ], [
+    { id: 'window:501:0', name: 'Project — Visual Studio Code' },
+    { id: 'screen:0:0', name: 'Entire Screen' },
+    { id: 'window:502:0', name: 'Should not replace an existing title' },
+  ]);
+  assert.equal(rows[0].title, 'Project — Visual Studio Code');
+  assert.equal(rows[1].title, 'Downloads');
+  assert.deepEqual(mergeCapturedWindowTitles(rows, null), rows);
 });
 
 test('todoReminderState fires once within the final hour and expires after the DDL', () => {

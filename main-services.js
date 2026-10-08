@@ -207,6 +207,22 @@ function normalizeWindowRows(rows) {
     ) === index);
 }
 
+function mergeCapturedWindowTitles(rows, sources) {
+  if (!Array.isArray(rows)) return [];
+  const titles = new Map();
+  for (const source of Array.isArray(sources) ? sources : []) {
+    const match = /^window:(\d+):/.exec(String(source && source.id || ''));
+    const title = String(source && source.name || '').replace(/\s+/g, ' ').trim();
+    if (!match || !title) continue;
+    titles.set(Number(match[1]), title);
+  }
+  return rows.map((row) => {
+    if (!row || String(row.title || '').trim()) return row;
+    const title = titles.get(Number(row.windowNumber));
+    return title ? { ...row, title } : row;
+  });
+}
+
 function todoReminderState(todo, now = Date.now(), leadMs = 60 * 60 * 1000) {
   if (!todo || typeof todo !== 'object') return { state: 'invalid', delayMs: 0 };
   if (todo.done === true) return { state: 'done', delayMs: 0 };
@@ -540,6 +556,26 @@ function sodaShortcutSpec(action) {
   return null;
 }
 
+function desktopPetBounds(display, size = {}, savedPosition = null, margin = 20) {
+  const area = display && (display.workArea || display.bounds);
+  if (!area) return { x: 0, y: 0, width: 260, height: 300 };
+  const width = Math.max(1, Math.min(Math.round(Number(size.width) || 260), area.width));
+  const height = Math.max(1, Math.min(Math.round(Number(size.height) || 300), area.height));
+  const safeMargin = Math.max(0, Math.round(Number(margin) || 0));
+  const maximumX = area.x + area.width - width;
+  const maximumY = area.y + area.height - height;
+  const defaultX = Math.max(area.x, maximumX - safeMargin);
+  const defaultY = Math.max(area.y, maximumY - safeMargin);
+  const requestedX = Number.isFinite(savedPosition?.x) ? Math.round(savedPosition.x) : defaultX;
+  const requestedY = Number.isFinite(savedPosition?.y) ? Math.round(savedPosition.y) : defaultY;
+  return {
+    x: Math.min(maximumX, Math.max(area.x, requestedX)),
+    y: Math.min(maximumY, Math.max(area.y, requestedY)),
+    width,
+    height,
+  };
+}
+
 async function controlSodaMusic(action, dependencies = {}, currentPlaying = false) {
   if (!['play', 'pause', 'next', 'previous'].includes(action)) {
     return { ok: false, error: 'invalid_action', running: false, playing: false };
@@ -589,6 +625,7 @@ module.exports = {
   extractFaviconHref,
   recordingExtension,
   normalizeWindowRows,
+  mergeCapturedWindowTitles,
   todoReminderState,
   todoReminderTimerDelay,
   taskNotificationIdentity,
@@ -611,6 +648,7 @@ module.exports = {
   updateFeaturePreference,
   normalizeDefaultTabPreference,
   updateDefaultTabPreference,
+  desktopPetBounds,
   sodaShortcutSpec,
   controlSodaMusic,
 };

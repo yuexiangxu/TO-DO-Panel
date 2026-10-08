@@ -25,3 +25,9 @@ website/public/product-captures/raw/
 .env
 .env.*
 !.env.example
+
+# Private, timestamped account snapshots
+.local/
+
+# Codex scratch files
+/work/
